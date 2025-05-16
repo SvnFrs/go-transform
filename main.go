@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"image"
@@ -14,12 +16,93 @@ import (
 	"github.com/nfnt/resize"
 )
 
+// ICO file format structures
+type icondir struct {
+	Reserved uint16
+	Type     uint16
+	Count    uint16
+}
+
+type icondirEntry struct {
+	Width        byte
+	Height       byte
+	PaletteCount byte
+	Reserved     byte
+	ColorPlanes  uint16
+	BitsPerPixel uint16
+	Size         uint32
+	Offset       uint32
+}
+
+// EncodeICO converts an image to ICO format and writes it to w
+func EncodeICO(w *os.File, img image.Image) error {
+	// Convert image to PNG first (ICO will contain a PNG)
+	pngBuffer := new(bytes.Buffer)
+	err := png.Encode(pngBuffer, img)
+	if err != nil {
+		return err
+	}
+	pngBytes := pngBuffer.Bytes()
+	pngSize := len(pngBytes)
+
+	// Write ICO header
+	dir := icondir{
+		Reserved: 0,
+		Type:     1, // 1 = ICO, 2 = CUR
+		Count:    1, // We only embed one image
+	}
+
+	err = binary.Write(w, binary.LittleEndian, dir)
+	if err != nil {
+		return err
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	// Use 0 for 256px dimensions as per ICO format spec
+	var widthByte, heightByte byte
+	if width == 256 {
+		widthByte = 0
+	} else {
+		widthByte = byte(width)
+	}
+	if height == 256 {
+		heightByte = 0
+	} else {
+		heightByte = byte(height)
+	}
+
+	// Write ICO directory entry
+	entry := icondirEntry{
+		Width:        widthByte,
+		Height:       heightByte,
+		PaletteCount: 0,
+		Reserved:     0,
+		ColorPlanes:  1,
+		BitsPerPixel: 32, // PNG with alpha channel
+		Size:         uint32(pngSize),
+		Offset:       22, // Size of icondir (6) + size of icondirEntry (16) = 22
+	}
+
+	err = binary.Write(w, binary.LittleEndian, entry)
+	if err != nil {
+		return err
+	}
+
+	// Write the PNG data
+	_, err = w.Write(pngBytes)
+	return err
+}
+
 func main() {
 	// Define command line flags
 	inputFile := flag.String("input", "", "Input image file path (required)")
 	outputFile := flag.String("output", "", "Output image file path (if not specified, will use input filename with suffix)")
 	resizePercent := flag.Int("resize", 0, "Resize percentage (1-99). 0 means no resize")
 	compressLevel := flag.Int("compress", 0, "Compression level (1-100, where 1 is max compression, 100 is best quality). 0 means no compression")
+	convertToIco := flag.Bool("to-ico", false, "Convert the image to ICO format")
 
 	flag.Parse()
 
@@ -81,7 +164,15 @@ func main() {
 			suffix += fmt.Sprintf("_c%d", *compressLevel)
 		}
 
-		outPath = basename + suffix + ext
+		// Change extension if converting to ICO
+		if *convertToIco {
+			outPath = basename + suffix + ".ico"
+		} else {
+			outPath = basename + suffix + ext
+		}
+	} else if *convertToIco && !strings.HasSuffix(strings.ToLower(outPath), ".ico") {
+		// Ensure .ico extension when converting to ICO
+		outPath += ".ico"
 	}
 
 	// Create output file
@@ -90,6 +181,16 @@ func main() {
 		log.Fatalf("Error creating output file: %v", err)
 	}
 	defer out.Close()
+
+	// Handle ICO conversion specifically
+	if *convertToIco {
+		err = EncodeICO(out, img)
+		if err != nil {
+			log.Fatalf("Error encoding to ICO format: %v", err)
+		}
+		fmt.Printf("Image converted to ICO format and saved to %s\n", outPath)
+		return
+	}
 
 	// Save the processed image with compression if applicable
 	switch strings.ToLower(format) {
