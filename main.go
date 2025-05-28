@@ -96,6 +96,25 @@ func EncodeICO(w *os.File, img image.Image) error {
 	return err
 }
 
+// determineOutputCategory determines which output folder to use based on operations
+func determineOutputCategory(resizePercent int, compressLevel int, convertToIco bool) string {
+	if convertToIco {
+		return "transform"
+	}
+	if resizePercent > 0 {
+		return "resize"
+	}
+	if compressLevel > 0 {
+		return "compress"
+	}
+	return "processed" // fallback for any other processing
+}
+
+// ensureOutputDir creates the output directory if it doesn't exist
+func ensureOutputDir(dir string) error {
+	return os.MkdirAll(dir, 0755)
+}
+
 func main() {
 	// Define command line flags
 	inputFile := flag.String("input", "", "Input image file path (required)")
@@ -150,11 +169,30 @@ func main() {
 		fmt.Printf("Image resized to %d%% (%dx%d pixels)\n", *resizePercent, width, height)
 	}
 
-	// Determine output filename if not provided
-	outPath := *outputFile
-	if outPath == "" {
-		ext := filepath.Ext(*inputFile)
-		basename := strings.TrimSuffix(*inputFile, ext)
+	// Determine output filename and path
+	var outPath string
+	if *outputFile != "" {
+		// If output file is specified, use it as-is but ensure it goes to the right folder
+		category := determineOutputCategory(*resizePercent, *compressLevel, *convertToIco)
+		outputDir := filepath.Join("output", category)
+
+		// Ensure output directory exists
+		err = ensureOutputDir(outputDir)
+		if err != nil {
+			log.Fatalf("Error creating output directory: %v", err)
+		}
+
+		filename := filepath.Base(*outputFile)
+		if *convertToIco && !strings.HasSuffix(strings.ToLower(filename), ".ico") {
+			// Add .ico extension if converting to ICO
+			filename += ".ico"
+		}
+		outPath = filepath.Join(outputDir, filename)
+	} else {
+		// Generate output filename automatically
+		inputBasename := filepath.Base(*inputFile)
+		ext := filepath.Ext(inputBasename)
+		basename := strings.TrimSuffix(inputBasename, ext)
 
 		suffix := ""
 		if *resizePercent > 0 {
@@ -164,15 +202,25 @@ func main() {
 			suffix += fmt.Sprintf("_c%d", *compressLevel)
 		}
 
-		// Change extension if converting to ICO
-		if *convertToIco {
-			outPath = basename + suffix + ".ico"
-		} else {
-			outPath = basename + suffix + ext
+		// Determine output category and directory
+		category := determineOutputCategory(*resizePercent, *compressLevel, *convertToIco)
+		outputDir := filepath.Join("output", category)
+
+		// Ensure output directory exists
+		err = ensureOutputDir(outputDir)
+		if err != nil {
+			log.Fatalf("Error creating output directory: %v", err)
 		}
-	} else if *convertToIco && !strings.HasSuffix(strings.ToLower(outPath), ".ico") {
-		// Ensure .ico extension when converting to ICO
-		outPath += ".ico"
+
+		// Change extension if converting to ICO
+		var filename string
+		if *convertToIco {
+			filename = basename + suffix + ".ico"
+		} else {
+			filename = basename + suffix + ext
+		}
+
+		outPath = filepath.Join(outputDir, filename)
 	}
 
 	// Create output file
